@@ -1,0 +1,9 @@
+*.ini
+offline1-linear-algebra/1805012/
+offline1-linear-algebra/1805012.zip
+offline2/__pycache__/
+offline2/creditcardfraud/
+offline2/telco-customer-churn/
+offline2/1805012.zip
+offline2/1805012/
+offline2/kaggle.json
