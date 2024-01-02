@@ -1,5 +1,7 @@
 import numpy as np
 rand = np.random.default_rng(42)
+from sklearn.model_selection import train_test_split
+
 
 class Layer:
     def __init__(self):
@@ -12,7 +14,7 @@ class Layer:
         pass 
 
 class Linear(Layer):
-    def __init__(self,fan_in,fan_out,seed=42):
+    def __init__(self,fan_in,fan_out,optimizer="adam",seed=42):
         self.fan_in = fan_in 
         self.fan_out = fan_out
 
@@ -21,24 +23,61 @@ class Linear(Layer):
         self.weights = np.random.uniform(-limit, limit, size=(fan_out, fan_in))
         self.bias = np.ones((fan_out,1))
 
+        self.optimizer = optimizer
+        #adam optimizer 
+        if optimizer.lower() == "adam":
+            self.init_adam() 
+
     def __call__(self,x,train=False):
         self.input = x
         return np.dot(self.weights,self.input) + self.bias
     
 
     def __repr__(self):
+        return f"Linear({self.fan_in},{self.fan_out})" 
+
+    def updater(self,wgrad,bgrad,learning_rate):
+        self.weights -= learning_rate * wgrad 
+        self.bias -= learning_rate * bgrad 
+        
+    def updater_momentum(self,):
+        pass
+    def updater_rmsprop(self,):
         pass 
+    
+    def init_adam(self):
+        self.vdw = np.zeros(self.weights.shape)
+        self.sdw = np.zeros(self.weights.shape)
+        self.vdb = np.zeros(self.bias.shape)
+        self.sdb = np.zeros(self.bias.shape)
+        self.t = 1 
+
+    def updater_adam(self,dw,db,alpha,beta1=0.9,beta2=0.999,eps=1e-8):
+        self.vdw = beta1 * self.vdw + (1-beta1) * dw 
+        self.vdb = beta1 * self.vdb + (1-beta1) * db 
+        self.sdw = beta2 * self.sdw + (1-beta2) * (dw * dw) 
+        self.sdb = beta2 * self.sdb + (1-beta2) * (db * db) 
+
+        vdw_corr = self.vdw / (1.0-beta1**self.t) 
+        vdb_corr = self.vdb / (1.0-beta1**self.t)
+        sdw_corr = self.sdw / (1.0-beta2**self.t)
+        sdb_corr = self.sdb / (1.0-beta2**self.t)
+
+        self.weights -= alpha * (vdw_corr / (np.sqrt(sdw_corr) + eps)) 
+        self.bias -= alpha * (vdb_corr/ (np.sqrt(sdb_corr) + eps))
+
+        self.t += 1 
+
 
     def backward(self, out_grad, learning_rate ):
         wgrad = np.dot(out_grad, self.input.T) / np.size(out_grad, axis=1) # mean  
         bgrad = np.mean(out_grad, axis=1, keepdims=True) 
         inputgrad = np.dot(self.weights.T, out_grad)
 
-        self.weights -= learning_rate * wgrad 
-        self.bias -= learning_rate * bgrad 
-
-        # print(f"{self.wgrad}")
-        # print(f"{self.bgrad}")
+        if self.optimizer == "adam":
+            self.updater_adam(dw=wgrad,db=bgrad,alpha=learning_rate)
+        else:
+            self.updater(wgrad,bgrad,learning_rate)
 
         return inputgrad 
 
@@ -66,6 +105,9 @@ class Softmax(Layer):
          #np.dot((np.identity(n)-self.output.T) * self.output, out_grad)  
         return grad
     
+    def __repr__(self):
+        return "Softmax"
+    
 class Activation(Layer):
     def __init__(self,activation,activation_prime):
         self.activation = activation 
@@ -85,6 +127,8 @@ class Tanh(Activation):
         return np.tanh(x)
     def tanh_grad(self,x):
         return 1-np.tanh(x)**2 
+    def __repr__(self):
+        return "Tanh"
 
 class Sigmoid(Activation):
     def __init__(self):
@@ -95,6 +139,9 @@ class Sigmoid(Activation):
     def sigmoid_grad(self,x):
         return self.sigmoid(x) * (1.0 - self.sigmoid(x)) 
     
+    def __repr__(self):
+        return "Sigmoid"
+    
 class ReLU(Activation):
     def __init__(self):
         super().__init__(self.relu,self.relu_grad)
@@ -103,6 +150,9 @@ class ReLU(Activation):
         return np.maximum(0,x)
     def relu_grad(self,x):
         return np.where(x > 0, 1, np.where(x < 0, 0, 0.5))
+    
+    def __repr__(self):
+        return "ReLU"
 
 class Dropout(Layer):
     def __init__(self, dropout_rate):
@@ -116,7 +166,10 @@ class Dropout(Layer):
             return x * self.mask
         else:
             return x
-
+        
+    def __repr__(self):
+        return f"Dropout({self.dropout_rate})"
+    
     def backward(self, grad, learning_rate):
         return grad * self.mask if self.mask is not None else grad
     
@@ -153,6 +206,12 @@ class NN:
         for layer in self.layers:
             input = layer(input,train=train)
         return input 
+    def __repr__(self):
+        s = ""
+        for layer in self.layers:
+            s += layer.__repr__() + '\n'
+        return s 
+    
     def backward(self, ):
         pass 
     
@@ -165,22 +224,21 @@ class NN:
             loaded_instance = pickle.load(file)
         self.__dict__.update(loaded_instance.__dict__)
     
-    def train_minibatch(self,):
-        pass 
-    
-    def train(self, loss, loss_grad, X, y, epochs = 1000, batch_size = 8, learning_rate = 0.001, verbose=True):
-        shuffled_indices = np.arange(len(X))
-        np.random.shuffle(shuffled_indices) 
+    def train(self, loss, loss_grad, X, y, epochs = 1000, batch_size = 8, learning_rate = 0.001, learning_rate_scheduler=lambda epochs,i_lr: (0.95**epochs)*i_lr, validation_percentage=0.15, verbose=True):
+        # shuffled_indices = np.arange(len(X))
+        # np.random.shuffle(shuffled_indices) 
 
-        X = X[shuffled_indices]
-        y = y[shuffled_indices] 
+        # X = X[shuffled_indices]
+        # y = y[shuffled_indices] 
+
+
+        X_train, X_val, y_train, y_val = train_test_split(X, y, test_size=validation_percentage, random_state=42)
 
         for epoch in range(epochs):
             error = 0 
-
-            for i in range((len(X)+batch_size-1)//batch_size):
-                X_batch = X[i:i+batch_size].T
-                y_batch = y[i:i+batch_size].T
+            for i in range((len(X_train)+batch_size-1)//batch_size):
+                X_batch = X_train[i*batch_size:(i+1)*batch_size].T
+                y_batch = y_train[i*batch_size:(i+1)*batch_size].T
 
                 y_pred = self.__call__(X_batch,train=True)
                 error += loss(y_batch,y_pred)
@@ -188,22 +246,21 @@ class NN:
                 grad = loss_grad(y_batch,y_pred)
 
                 for layer in reversed(self.layers):
-                    grad = layer.backward(grad, learning_rate)
-            error *= batch_size/len(X)
+                    grad = layer.backward(grad, learning_rate_scheduler(epoch,learning_rate) )
+            error *= batch_size/len(X_train)
+            
             if verbose:
-                print(f"{epoch=}, {error=}")
+                val_loss = loss(self.__call__(X_val.T),y_val.T)
+                print(f"{epoch=}, train_loss={error}, {val_loss=}")
 
     def eval(self, X,y,batch_size=1):
         corr = 0 
         for i in range((len(X)+batch_size-1)//batch_size):
-            x_ = X[i:i+batch_size].T
-            y_ = y[i:i+batch_size].T
+            x_ = X[i*batch_size:(i+1)*batch_size].T
+            y_ = y[i*batch_size:(i+1)*batch_size].T
 
             y_pred = self.__call__(x_)
             corr += np.sum(np.argmax(y_pred,axis=0) == np.argmax(y_,axis=0)) 
-        # for x,y in zip(X,y):
-        #     y_pred = self.__call__(x)
-        #     corr += 1 if np.argmax(y_pred) == np.argmax(y) else 0 
         
         return corr/len(X) 
     
