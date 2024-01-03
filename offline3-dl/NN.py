@@ -14,14 +14,18 @@ class Layer:
         pass 
 
 class Linear(Layer):
-    def __init__(self,fan_in,fan_out,optimizer="adam",seed=42):
+    def __init__(self,fan_in,fan_out,initializer="kaiming",optimizer="adam",seed=42):
         self.fan_in = fan_in 
         self.fan_out = fan_out
 
-        #xavier init 
-        limit = np.sqrt(6 / (fan_in + fan_out))
-        self.weights = np.random.uniform(-limit, limit, size=(fan_out, fan_in))
-        self.bias = np.ones((fan_out,1))
+        if initializer.lower() == 'kaiming':
+            self.weights = np.random.randn(fan_out,fan_in)*np.sqrt(2/(fan_in+fan_out))
+        elif initializer.lower() == "xavier":
+            #xavier init 
+            limit = np.sqrt(6 / (fan_in + fan_out))
+            self.weights = np.random.uniform(-limit, limit, size=(fan_out, fan_in))
+
+        self.bias = np.zeros((fan_out,1))
 
         self.optimizer = optimizer
         #adam optimizer 
@@ -46,17 +50,23 @@ class Linear(Layer):
         pass 
     
     def init_adam(self):
-        self.vdw = np.zeros(self.weights.shape)
-        self.sdw = np.zeros(self.weights.shape)
-        self.vdb = np.zeros(self.bias.shape)
-        self.sdb = np.zeros(self.bias.shape)
+        self.vdw = None  #np.zeros(self.weights.shape)
+        self.sdw = None #np.zeros(self.weights.shape)
+        self.vdb = None #np.zeros(self.bias.shape)
+        self.sdb = None #np.zeros(self.bias.shape)
         self.t = 1 
 
     def updater_adam(self,dw,db,alpha,beta1=0.9,beta2=0.999,eps=1e-8):
-        self.vdw = beta1 * self.vdw + (1-beta1) * dw 
-        self.vdb = beta1 * self.vdb + (1-beta1) * db 
-        self.sdw = beta2 * self.sdw + (1-beta2) * (dw * dw) 
-        self.sdb = beta2 * self.sdb + (1-beta2) * (db * db) 
+        if self.vdw is None:
+            self.vdw = np.zeros_like(dw)
+            self.sdw = np.zeros_like(dw) 
+            self.vdb = np.zeros_like(db)
+            self.sdb = np.zeros_like(db)
+
+        self.vdw = beta1 * self.vdw + (1.0-beta1) * dw 
+        self.vdb = beta1 * self.vdb + (1.0-beta1) * db 
+        self.sdw = beta2 * self.sdw + (1.0-beta2) * (dw ** 2) 
+        self.sdb = beta2 * self.sdb + (1.0-beta2) * (db ** 2) 
 
         vdw_corr = self.vdw / (1.0-beta1**self.t) 
         vdb_corr = self.vdb / (1.0-beta1**self.t)
