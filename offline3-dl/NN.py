@@ -1,7 +1,7 @@
 import numpy as np
 rand = np.random.default_rng(42)
 from sklearn.model_selection import train_test_split
-
+import os
 
 class Layer:
     def __init__(self):
@@ -226,6 +226,11 @@ class NN:
         pass 
     
     def save(self, filename):
+        try:
+            os.remove(filename) # pickle seems to write big files, idk why
+        except OSError as e:
+            print(e)
+        
         with open(filename, 'wb') as file:
             pickle.dump(self, file)
 
@@ -260,8 +265,10 @@ class NN:
             error *= batch_size/len(X_train)
             
             if verbose:
+                train_acc = self.eval(X_train,y_train,batch_size=batch_size)
+                val_acc = self.eval(X_val,y_val,batch_size=batch_size)
                 val_loss = loss(self.__call__(X_val.T),y_val.T)
-                print(f"{epoch=}, train_loss={error}, {val_loss=}")
+                print(f"{epoch=}, train_loss={error}, {val_loss=}, {train_acc=}, {val_acc=}")
 
     def eval(self, X,y,batch_size=1):
         corr = 0 
