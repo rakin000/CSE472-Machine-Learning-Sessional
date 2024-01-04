@@ -2,6 +2,8 @@ import numpy as np
 rand = np.random.default_rng(42)
 from sklearn.model_selection import train_test_split
 import os
+import pickle
+import copy
 
 class Layer:
     def __init__(self):
@@ -145,7 +147,7 @@ class Sigmoid(Activation):
         super().__init__(self.sigmoid,self.sigmoid_grad) 
     
     def sigmoid(self,x):
-        return 1.0 / (1.0 + np.exp(-x))
+        return 1.0 / (1.0 + np.exp(-x.clip(-500,500)))
     def sigmoid_grad(self,x):
         return self.sigmoid(x) * (1.0 - self.sigmoid(x)) 
     
@@ -178,7 +180,7 @@ class Dropout(Layer):
             return x
         
     def __repr__(self):
-        return f"Dropout({self.dropout_rate})"
+        return f"Dropout({self.dropout_rate*100}%)"
     
     def backward(self, grad, learning_rate):
         return grad * self.mask if self.mask is not None else grad
@@ -204,7 +206,6 @@ def cross_entropy_grad(y_true,y_pred,epsilon=1e-15):
     y_pred = np.clip( y_pred, epsilon, 1.0-epsilon)
     return (-y_true/y_pred) / len(y_true)  
 
-import pickle
 
 class NN:
     def __init__(self, *layers):
@@ -221,7 +222,9 @@ class NN:
         for layer in self.layers:
             s += layer.__repr__() + '\n'
         return s 
-    
+    def model_name(self):
+        return "model_"+self.__repr__().replace('\n','_')
+
     def backward(self, ):
         pass 
     
@@ -238,20 +241,39 @@ class NN:
         with open(filename, 'rb') as file:
             loaded_instance = pickle.load(file)
         self.__dict__.update(loaded_instance.__dict__)
-    
-    def train(self, loss, loss_grad, X, y, epochs = 1000, batch_size = 8, learning_rate = 0.001, learning_rate_scheduler=lambda epochs,i_lr: (0.95**epochs)*i_lr, validation_percentage=0.15, verbose=True):
-        # shuffled_indices = np.arange(len(X))
-        # np.random.shuffle(shuffled_indices) 
 
-        # X = X[shuffled_indices]
-        # y = y[shuffled_indices] 
 
+    def train(self, loss, loss_grad, X, y, epochs = 1000, batch_size = 1024, learning_rate = 0.001, 
+              learning_rate_scheduler=lambda epochs,i_lr: (0.95**epochs)*i_lr, 
+              validation_percentage=0.15, 
+              load_best_model_at_end=True, 
+              save_best_model_at_each_epoch=False,
+              eval_function=None,
+              best_model_comparator=None,
+              verbose=True):
+        
+        if verbose:
+            if eval_function is None:
+                raise Exception("Eval function missing")
+            train_eval = [] 
+            val_eval = [] 
+            train_loss = [] 
+            val_loss = []
+        if load_best_model_at_end or save_best_model_at_each_epoch:
+            if best_model_comparator is None :
+                raise Exception("best_model_comparator(model1,model1_eval,model2,model2_eval) is missing")
+            if eval_function is None:
+                raise Exception("Eval function missing")
+            best_model_eval = None  
+            best_model = None 
+            val_eval = [] 
+        
 
         X_train, X_val, y_train, y_val = train_test_split(X, y, test_size=validation_percentage, random_state=42)
-
+        num_batches = (len(X_train)+batch_size-1)//batch_size
         for epoch in range(epochs):
             error = 0 
-            for i in range((len(X_train)+batch_size-1)//batch_size):
+            for i in range(num_batches):
                 X_batch = X_train[i*batch_size:(i+1)*batch_size].T
                 y_batch = y_train[i*batch_size:(i+1)*batch_size].T
 
@@ -262,22 +284,27 @@ class NN:
 
                 for layer in reversed(self.layers):
                     grad = layer.backward(grad, learning_rate_scheduler(epoch,learning_rate) )
-            error *= batch_size/len(X_train)
+            error /= (num_batches)
             
+            
+            if load_best_model_at_end or save_best_model_at_each_epoch:
+                val_eval += [eval_function(self,X_val,y_val,batch_size=batch_size)]
+                best_model,best_model_eval = best_model_comparator(self,val_eval[epoch],best_model,best_model_eval)
+                best_model = copy.deepcopy(best_model)
+            if save_best_model_at_each_epoch:
+                best_model.save(f"{self.model_name()}.pkl")
             if verbose:
-                train_acc = self.eval(X_train,y_train,batch_size=batch_size)
-                val_acc = self.eval(X_val,y_val,batch_size=batch_size)
-                val_loss = loss(self.__call__(X_val.T),y_val.T)
-                print(f"{epoch=}, train_loss={error}, {val_loss=}, {train_acc=}, {val_acc=}")
+                if load_best_model_at_end == False:
+                    val_eval += [eval_function(self,X_val,y_val,batch_size=batch_size)]
+                train_eval += [eval_function(self,X_train,y_train,batch_size=batch_size)]
+                val_loss += [loss(self.__call__(X_val.T),y_val.T)]
+                train_loss += [error]      #[loss(self.__call__(X_train.T),y_train.T)]
 
-    def eval(self, X,y,batch_size=1):
-        corr = 0 
-        for i in range((len(X)+batch_size-1)//batch_size):
-            x_ = X[i*batch_size:(i+1)*batch_size].T
-            y_ = y[i*batch_size:(i+1)*batch_size].T
-
-            y_pred = self.__call__(x_)
-            corr += np.sum(np.argmax(y_pred,axis=0) == np.argmax(y_,axis=0)) 
+                print(f"{epoch=}, {train_loss[epoch]=}, {val_loss[epoch]=}, {train_eval[epoch]=}, {val_eval[epoch]=}")
         
-        return corr/len(X) 
+        if load_best_model_at_end:
+            self.__dict__.update(best_model.__dict__)
+        if verbose:
+            return train_loss,val_loss,train_eval,val_eval
+
     

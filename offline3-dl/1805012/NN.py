@@ -1,0 +1,331 @@
+import numpy as np
+rand = np.random.default_rng(42)
+from sklearn.model_selection import train_test_split
+import os
+import pickle
+import copy
+
+class Layer:
+    def __init__(self):
+        pass 
+
+    def __call__(self,x,train=False):
+        pass 
+
+    def backward(self,out_grad,learning_rate):
+        pass 
+
+class Linear(Layer):
+    def __init__(self,fan_in,fan_out,initializer="kaiming",optimizer="adam",seed=42):
+        self.fan_in = fan_in 
+        self.fan_out = fan_out
+
+        if initializer.lower() == 'kaiming':
+            self.weights = np.random.randn(fan_out,fan_in)*np.sqrt(2/(fan_in+fan_out))
+        elif initializer.lower() == "xavier":
+            #xavier init 
+            limit = np.sqrt(6 / (fan_in + fan_out))
+            self.weights = np.random.uniform(-limit, limit, size=(fan_out, fan_in))
+
+        self.bias = np.zeros((fan_out,1))
+
+        self.optimizer = optimizer
+        #adam optimizer 
+        if optimizer.lower() == "adam":
+            self.init_adam() 
+
+    def __call__(self,x,train=False):
+        self.input = x
+        return np.dot(self.weights,self.input) + self.bias
+    
+
+    def __repr__(self):
+        return f"Linear({self.fan_in},{self.fan_out})" 
+
+    def updater(self,wgrad,bgrad,learning_rate):
+        self.weights -= learning_rate * wgrad 
+        self.bias -= learning_rate * bgrad 
+        
+    def updater_momentum(self,):
+        pass
+    def updater_rmsprop(self,):
+        pass 
+    
+    def init_adam(self):
+        self.vdw = None  #np.zeros(self.weights.shape)
+        self.sdw = None #np.zeros(self.weights.shape)
+        self.vdb = None #np.zeros(self.bias.shape)
+        self.sdb = None #np.zeros(self.bias.shape)
+        self.t = 1 
+
+    def updater_adam(self,dw,db,alpha,beta1=0.9,beta2=0.999,eps=1e-8):
+        if self.vdw is None:
+            self.vdw = np.zeros_like(dw)
+            self.sdw = np.zeros_like(dw) 
+            self.vdb = np.zeros_like(db)
+            self.sdb = np.zeros_like(db)
+
+        self.vdw = beta1 * self.vdw + (1.0-beta1) * dw 
+        self.vdb = beta1 * self.vdb + (1.0-beta1) * db 
+        self.sdw = beta2 * self.sdw + (1.0-beta2) * (dw ** 2) 
+        self.sdb = beta2 * self.sdb + (1.0-beta2) * (db ** 2) 
+
+        vdw_corr = self.vdw / (1.0-beta1**self.t) 
+        vdb_corr = self.vdb / (1.0-beta1**self.t)
+        sdw_corr = self.sdw / (1.0-beta2**self.t)
+        sdb_corr = self.sdb / (1.0-beta2**self.t)
+
+        self.weights -= alpha * (vdw_corr / (np.sqrt(sdw_corr) + eps)) 
+        self.bias -= alpha * (vdb_corr/ (np.sqrt(sdb_corr) + eps))
+
+        self.t += 1 
+
+
+    def backward(self, out_grad, learning_rate ):
+        wgrad = np.dot(out_grad, self.input.T) / np.size(out_grad, axis=1) # mean  
+        bgrad = np.mean(out_grad, axis=1, keepdims=True) 
+        inputgrad = np.dot(self.weights.T, out_grad)
+
+        if self.optimizer == "adam":
+            self.updater_adam(dw=wgrad,db=bgrad,alpha=learning_rate)
+        else:
+            self.updater(wgrad,bgrad,learning_rate)
+
+        return inputgrad 
+
+    def reset_grad(self):
+        self.wgrad = np.zeros((self.fan_in,self.fan_out))
+        self.bgrad = np.zeros((1,self.fan_out)) 
+
+class Softmax(Layer):
+    def __call__(self, input, train=False):
+        self.input = input
+        tmp = input - np.max(input, axis=0)  
+        tmp = np.exp(tmp)
+        self.output = tmp / np.sum(tmp, axis=0, keepdims=True)
+        return self.output 
+    def backward(self, out_grad, learning_rate):
+        assert out_grad.shape == self.input.shape
+        n = np.size(self.output, axis=0) 
+        # grad = np.hstack([ np.dot( (np.identity(n) - input )*input.T, out_grad) for input in self.input.T  ])
+        # grad = np.hstack([np.dot( (np.identity(n) - self.input[:,i:i+1].T)*self.input[:,i:i+1], out_grad[:,i:i+1] ) for i in range(np.size(self.input,axis=1)) ])
+         # Modify the backward calculation for improved numerical stability
+        grad = np.hstack([
+            np.dot( (np.identity(n) - self.output[:, i:i+1].T) * self.output[:, i:i+1] , out_grad[:, i:i+1])
+            for i in range(np.size(self.input, axis=1))
+        ])
+         #np.dot((np.identity(n)-self.output.T) * self.output, out_grad)  
+        return grad
+    
+    def __repr__(self):
+        return "Softmax"
+    
+class Activation(Layer):
+    def __init__(self,activation,activation_prime):
+        self.activation = activation 
+        self.activation_grad = activation_prime
+
+    def __call__(self, input, train=False):
+        self.input = input 
+        return self.activation(self.input) 
+    
+    def backward(self, out_grad, learning_rate):
+        return np.multiply(out_grad, self.activation_grad(self.input))
+    
+class Tanh(Activation):
+    def __init__(self):
+        super().__init__(self.tanh,self.tanh_grad) 
+    def tanh(self,x):
+        return np.tanh(x)
+    def tanh_grad(self,x):
+        return 1-np.tanh(x)**2 
+    def __repr__(self):
+        return "Tanh"
+
+class Sigmoid(Activation):
+    def __init__(self):
+        super().__init__(self.sigmoid,self.sigmoid_grad) 
+    
+    def sigmoid(self,x):
+        return 1.0 / (1.0 + np.exp(-x))
+    def sigmoid_grad(self,x):
+        return self.sigmoid(x) * (1.0 - self.sigmoid(x)) 
+    
+    def __repr__(self):
+        return "Sigmoid"
+    
+class ReLU(Activation):
+    def __init__(self):
+        super().__init__(self.relu,self.relu_grad)
+
+    def relu(self,x):
+        return np.maximum(0,x)
+    def relu_grad(self,x):
+        return np.where(x > 0, 1, np.where(x < 0, 0, 0.5))
+    
+    def __repr__(self):
+        return "ReLU"
+
+class Dropout(Layer):
+    def __init__(self, dropout_rate):
+        self.dropout_rate = dropout_rate
+        self.mask = None
+
+    def __call__(self, x, train=False):
+        if train:
+            self.mask = (np.random.rand(*x.shape) < (1 - self.dropout_rate)) / (1 - self.dropout_rate)
+            # print(self.mask)
+            return x * self.mask
+        else:
+            return x
+        
+    def __repr__(self):
+        return f"Dropout({self.dropout_rate*100}%)"
+    
+    def backward(self, grad, learning_rate):
+        return grad * self.mask if self.mask is not None else grad
+    
+
+def mse(y_true, y_pred):
+    return np.mean(np.power(y_true - y_pred, 2))
+
+def mse_grad(y_true, y_pred):
+    return 2 * (y_pred - y_true) / np.size(y_true)
+
+def binary_cross_entropy(y_true, y_pred):
+    return np.mean(-y_true * np.log(y_pred) - (1 - y_true) * np.log(1 - y_pred))
+
+def binary_cross_entropy_grad(y_true, y_pred): # wrt y_pred
+    return ((1 - y_true) / (1 - y_pred) - y_true / y_pred) / np.size(y_true)
+
+def cross_entropy(y_true,y_pred,epsilon=1e-15):
+    y_pred = np.clip( y_pred, epsilon, 1.0-epsilon)
+    return np.mean(-y_true*np.log(y_pred)) 
+
+def cross_entropy_grad(y_true,y_pred,epsilon=1e-15):
+    y_pred = np.clip( y_pred, epsilon, 1.0-epsilon)
+    return (-y_true/y_pred) / len(y_true)  
+
+
+class NN:
+    def __init__(self, *layers):
+        self.layers : Layer = [] 
+        for layer in layers:
+            self.layers += [layer]
+        
+    def __call__(self,input,train=False):
+        for layer in self.layers:
+            input = layer(input,train=train)
+        return input 
+    def __repr__(self):
+        s = ""
+        for layer in self.layers:
+            s += layer.__repr__() + '\n'
+        return s 
+    def model_name(self):
+        return "model_"+self.__repr__().replace('\n','_')
+
+    def backward(self, ):
+        pass 
+    
+    def save(self, filename):
+        try:
+            os.remove(filename) # pickle seems to write big files, idk why
+        except OSError as e:
+            print(e)
+        
+        with open(filename, 'wb') as file:
+            pickle.dump(self, file)
+
+    def load(self, filename):
+        with open(filename, 'rb') as file:
+            loaded_instance = pickle.load(file)
+        self.__dict__.update(loaded_instance.__dict__)
+
+    def train_plot(self,train_loss,val_loss,train_acc,val_acc):
+        import matplotlib.pyplot as plt
+        epochs = range(1, len(train_loss) + 1)
+
+        # loss graph
+        plt.plot(epochs, train_loss, 'b-', label='Training Loss')
+        plt.plot(epochs, val_loss, 'y-', label='Validation Loss')
+
+        plt.title('Training and Validation Loss')
+        plt.xlabel('Epochs')
+        plt.ylabel('Loss')
+        plt.legend()
+
+        plt.show()
+
+        # accuracy graph
+        plt.plot(epochs, train_acc, 'b-', label='Training Accuracy')
+        plt.plot(epochs, val_acc, 'y-', label='Validation Accuracy')
+
+        plt.title('Training and Validation Accuracy')
+        plt.xlabel('Epochs')
+        plt.ylabel('Accuracy')
+        plt.legend()
+
+        plt.show()
+
+    def train(self, loss, loss_grad, X, y, epochs = 1000, batch_size = 1024, learning_rate = 0.001, learning_rate_scheduler=lambda epochs,i_lr: (0.95**epochs)*i_lr, validation_percentage=0.15, load_best_model_at_end=True, save_best_model_at_each_epoch=False,verbose=True):
+        if verbose:
+            train_acc = [] 
+            val_acc = [] 
+            train_loss = [] 
+            val_loss = [] 
+
+
+        if load_best_model_at_end: 
+            best_val_acc = 0 
+            best_model = None 
+
+        X_train, X_val, y_train, y_val = train_test_split(X, y, test_size=validation_percentage, random_state=42)
+        length = (len(X_train)+batch_size-1)//batch_size
+        for epoch in range(epochs):
+            error = 0 
+            for i in range(length):
+                X_batch = X_train[i*batch_size:(i+1)*batch_size].T
+                y_batch = y_train[i*batch_size:(i+1)*batch_size].T
+
+                y_pred = self.__call__(X_batch,train=True)
+                error += loss(y_batch,y_pred)
+
+                grad = loss_grad(y_batch,y_pred)
+
+                for layer in reversed(self.layers):
+                    grad = layer.backward(grad, learning_rate_scheduler(epoch,learning_rate) )
+            error /= (length)
+            
+            val_acc += [self.eval(X_val,y_val,batch_size=batch_size)*100]
+            
+            if load_best_model_at_end:
+                if val_acc[epoch] > best_val_acc:
+                    best_val_acc = val_acc[epoch]
+                    best_model = copy.deepcopy(self)
+            if save_best_model_at_each_epoch:
+                best_model.save(f"{self.model_name()}.pkl")
+            if verbose:
+                train_acc += [self.eval(X_train,y_train,batch_size=batch_size)*100]
+                val_loss += [loss(self.__call__(X_val.T),y_val.T)]
+                train_loss += [error] #[loss(self.__call__(X_train.T),y_train.T)]
+
+                print(f"{epoch=}, {train_loss[epoch]=}, {val_loss[epoch]=}, {train_acc[epoch]=}, {val_acc[epoch]=}")
+
+       
+        if verbose:
+            self.train_plot(train_loss=train_loss,val_loss=val_loss,train_acc=train_acc,val_acc=val_acc)
+        if load_best_model_at_end:
+            self.__dict__.update(best_model.__dict__)
+
+    def eval(self, X,y,batch_size=1024):
+        corr = 0 
+        for i in range((len(X)+batch_size-1)//batch_size):
+            x_ = X[i*batch_size:(i+1)*batch_size].T
+            y_ = y[i*batch_size:(i+1)*batch_size].T
+
+            y_pred = self.__call__(x_)
+            corr += np.sum(np.argmax(y_pred,axis=0) == np.argmax(y_,axis=0)) 
+        
+        return corr/len(X) 
+    
